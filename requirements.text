@@ -1,0 +1,11 @@
+torch
+transformers
+peft
+datasets
+accelerate
+lm-eval
+evaluate          # needed by HumanEval's code_eval metric
+pyyaml
+matplotlib
+pandas
+pytest
