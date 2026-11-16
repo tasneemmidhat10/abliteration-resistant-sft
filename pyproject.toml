@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arft"
+version = "0.1.0"
+description = "Abliteration-resistant fine-tuning"
+requires-python = ">=3.12"
+# Dependencies live in requirements.txt (torch must be installed per platform first).
+
+[tool.setuptools.packages.find]
+where = ["src"]

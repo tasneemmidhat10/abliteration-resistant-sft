@@ -1,7 +1,14 @@
-data/
+# Full splits are rebuilt by `python -m arft.data`; only small files are committed.
+data/*
+!data/stats.json
+!data/samples.jsonl
+!data/eval_indices.json
 checkpoints/
 wandb/
 *.safetensors
 *.bin
 __pycache__/
 .env
+.venv*/
+logs/
+*.egg-info/

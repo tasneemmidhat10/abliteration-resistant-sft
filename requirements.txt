@@ -1,0 +1,23 @@
+# Python dependencies for abliteration-resistant-sft.
+#
+# torch is NOT listed here: on Bender it must be the CUDA 12.4 build and is
+# installed first by scripts/slurm/create_venv_bender.sh (torch==2.6.0+cu124).
+# On a laptop, install torch for your platform first (https://pytorch.org),
+# then: pip install -r requirements.txt
+#
+# Pins marked (foundry) are versions verified on Bender by llm-foundry's
+# alignment/slurm/create_venv_bender.sh with torch 2.6.0+cu124.
+
+transformers==5.14.0   # (foundry)
+datasets==5.0.1        # (foundry)
+accelerate==1.13.0     # (foundry)
+trl==1.13.0            # (foundry) SFT trainer
+peft                   # LoRA adapters
+lm-eval                # capability benchmarks
+evaluate               # needed by HumanEval's code_eval metric
+sentencepiece
+pyyaml
+matplotlib
+pandas
+wandb
+pytest

@@ -1,0 +1,136 @@
+{
+  "seed": 0,
+  "length_matched": true,
+  "filtering": {
+    "refusal": {
+      "candidates": 6062,
+      "duplicates": 0,
+      "contaminated": {
+        "wildguardtest": 9,
+        "advbench": 1
+      },
+      "clean": 6052,
+      "length_matched": 1541,
+      "selected": 1541
+    },
+    "general": {
+      "candidates": 3898,
+      "duplicates": 367,
+      "contaminated": {
+        "exact": 1,
+        "wildguardtest": 1
+      },
+      "clean": 3529,
+      "length_matched": 1541,
+      "selected": 1541
+    },
+    "coding": {
+      "candidates": 34999,
+      "duplicates": 8,
+      "contaminated": {
+        "humaneval": 3
+      },
+      "clean": 34988,
+      "selected": 4000
+    },
+    "math": {
+      "candidates": 149960,
+      "duplicates": 0,
+      "contaminated": {},
+      "clean": 149960,
+      "selected": 4000
+    },
+    "length_only_acc_refusal_vs_general": {
+      "before_matching": 0.839,
+      "selected": 0.507
+    }
+  },
+  "splits": {
+    "train": {
+      "total": 9974,
+      "by_stratum": {
+        "coding": 3600,
+        "general": 1387,
+        "math": 3600,
+        "refusal": 1387
+      },
+      "by_source": {
+        "ai2-adapt-dev/personahub_code_v2_34999": 3600,
+        "ai2-adapt-dev/personahub_math_v5_regen_149960": 3600,
+        "wildguardmix": 2774
+      }
+    },
+    "val": {
+      "total": 1108,
+      "by_stratum": {
+        "coding": 400,
+        "general": 154,
+        "math": 400,
+        "refusal": 154
+      },
+      "by_source": {
+        "ai2-adapt-dev/personahub_code_v2_34999": 400,
+        "ai2-adapt-dev/personahub_math_v5_regen_149960": 400,
+        "wildguardmix": 308
+      }
+    }
+  },
+  "lengths_words": {
+    "coding": {
+      "prompt": {
+        "mean": 150.2,
+        "median": 147.0,
+        "p10": 102.0,
+        "p90": 201.0
+      },
+      "response": {
+        "mean": 70.5,
+        "median": 33.0,
+        "p10": 16.0,
+        "p90": 209.0
+      }
+    },
+    "general": {
+      "prompt": {
+        "mean": 13.4,
+        "median": 13,
+        "p10": 10.0,
+        "p90": 18.0
+      },
+      "response": {
+        "mean": 284.0,
+        "median": 272,
+        "p10": 78.2,
+        "p90": 489.0
+      }
+    },
+    "math": {
+      "prompt": {
+        "mean": 207.5,
+        "median": 203.0,
+        "p10": 151.0,
+        "p90": 268.0
+      },
+      "response": {
+        "mean": 495.4,
+        "median": 478.0,
+        "p10": 344.0,
+        "p90": 656.0
+      }
+    },
+    "refusal": {
+      "prompt": {
+        "mean": 13.5,
+        "median": 13,
+        "p10": 10.0,
+        "p90": 18.0
+      },
+      "response": {
+        "mean": 122.4,
+        "median": 86,
+        "p10": 23.0,
+        "p90": 249.8
+      }
+    }
+  }
+}
