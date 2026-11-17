@@ -13,7 +13,8 @@ Differences from the handbook's starter code, and why:
   * Tülu sources are matched by exact name. The substring "personahub_math"
     also matches the Algebra subset (paper-only), which would be mixed in silently.
   * Exact-duplicate prompts are dropped (after whitespace/case normalisation),
-    both within and across sources.
+    both within and across sources. For duplicated general prompts, a copy whose
+    response is not a refusal-style lecture is preferred over the first copy.
   * Training prompts that share any 13-word n-gram with an evaluation or attacker
     prompt (GSM8K test, HumanEval, WildGuardMix-test, AdvBench, Alpaca) are dropped.
   * Refusal and general prompts are length-matched (same count per word-length
@@ -50,6 +51,19 @@ N_SAMPLES_PER_STRATUM = 20
 # cross-pool duplicates.
 N_TARGET = {"refusal": 2000, "general": 2000, "coding": 4000, "math": 4000}
 LENGTH_MATCHED = ("refusal", "general")
+
+# WildGuardMix has several responses per prompt, and some "compliance" responses to
+# harmless prompts open with a refusal or safety lecture. When a general prompt is
+# duplicated, keep a copy whose response does not open like that, if one exists.
+# Heuristic on the opening words; not applied to "refusal", where refusing is correct.
+PREFER_PLAIN_RESPONSE = ("general",)
+LECTURE_OPENING = re.compile(
+    r"^\W*(i'?m sorry|i am sorry|i apologi[sz]e|i cannot|i can'?t|i can not"
+    r"|i must (emphasi[sz]e|stress|clarify|point out|note)|as an ai|i'?m unable|i am unable"
+    r"|i won'?t|i'?m here to help, but|i'?m not able|it'?s important to note that"
+    r"|i understand (that|your)|while i (can'?t|cannot))",
+    re.I,
+)
 
 # Exact Tülu `source` names, checked on 2026-11-16 with Counter(tulu["source"]).
 TULU_SOURCES = {
@@ -100,6 +114,10 @@ def prompt_len(r):
 def normalise(text):
     """Lowercase and collapse whitespace: the key for exact-duplicate checks."""
     return re.sub(r"\s+", " ", text.lower()).strip()
+
+
+def opens_with_lecture(text):
+    return bool(LECTURE_OPENING.match(text.strip()))
 
 
 def ngrams(text, n=NGRAM):
@@ -179,6 +197,10 @@ def contamination_checker(refs):
 def clean_pools(candidates, refs):
     """Drop duplicate and contaminated rows, then shuffle each pool.
 
+    A duplicate normally loses to the first copy. In PREFER_PLAIN_RESPONSE pools,
+    a plain response replaces a kept lecture-style one, in the kept copy's slot,
+    so pool sizes and the shuffle are unaffected.
+
     Each pool gets its own RNG, so its order depends only on its own contents:
     changing one pool never reshuffles another.
     """
@@ -187,15 +209,23 @@ def clean_pools(candidates, refs):
     pools, report = {}, {}
     for key in N_TARGET:
         rows = candidates[key]
-        stage = {"candidates": len(rows), "duplicates": 0, "contaminated": Counter()}
-        kept = []
+        stage = {"candidates": len(rows), "duplicates": 0, "plain_copy_preferred": 0,
+                 "contaminated": Counter()}
+        kept, slot = [], {}  # slot: normalised prompt -> index in kept (this pool only)
         for r in rows:
             norm = normalise(prompt_of(r))
             if norm in seen:
                 stage["duplicates"] += 1
+                i = slot.get(norm)
+                if (key in PREFER_PLAIN_RESPONSE and i is not None
+                        and opens_with_lecture(response_of(kept[i]))
+                        and not opens_with_lecture(response_of(r))):
+                    kept[i] = r
+                    stage["plain_copy_preferred"] += 1
             elif source := leaked_from(prompt_of(r)):
                 stage["contaminated"][source] += 1
             else:
+                slot[norm] = len(kept)
                 kept.append(r)
             seen.add(norm)
         random.Random(SEED).shuffle(kept)

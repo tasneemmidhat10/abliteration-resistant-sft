@@ -5,6 +5,7 @@
     "refusal": {
       "candidates": 6062,
       "duplicates": 0,
+      "plain_copy_preferred": 0,
       "contaminated": {
         "wildguardtest": 9,
         "advbench": 1
@@ -16,6 +17,7 @@
     "general": {
       "candidates": 3898,
       "duplicates": 367,
+      "plain_copy_preferred": 80,
       "contaminated": {
         "exact": 1,
         "wildguardtest": 1
@@ -27,6 +29,7 @@
     "coding": {
       "candidates": 34999,
       "duplicates": 8,
+      "plain_copy_preferred": 0,
       "contaminated": {
         "humaneval": 3,
         "alpaca": 5
@@ -37,6 +40,7 @@
     "math": {
       "candidates": 149960,
       "duplicates": 0,
+      "plain_copy_preferred": 0,
       "contaminated": {
         "alpaca": 2
       },
@@ -101,9 +105,9 @@
         "p90": 18.0
       },
       "response": {
-        "mean": 284.0,
-        "median": 272,
-        "p10": 78.2,
+        "mean": 283.9,
+        "median": 270,
+        "p10": 78.0,
         "p90": 489.0
       }
     },

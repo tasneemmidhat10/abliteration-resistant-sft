@@ -1,11 +1,14 @@
 from collections import Counter
 
 from arft.data import (
+    clean_pools,
     length_bin,
     length_match,
     length_only_accuracy,
     ngrams,
     normalise,
+    prompt_of,
+    response_of,
     row,
     stratified_split,
 )
@@ -43,3 +46,24 @@ def test_split_is_stratified():
     val = Counter(r["task_type"] for r in splits["val"])
     assert val == {"safety": 5, "coding": 10}
     assert len(splits["train"]) == 135
+
+
+def test_dedup_prefers_plain_general_response():
+    lecture = "I must emphasize that harm is wrong. Here is how..."
+    plain = "Here is how to give a great presentation."
+    candidates = {
+        "refusal": [row("Hurt someone", "I'm sorry, I can't help.", "safety", True, "s"),
+                    row("hurt  someone", "Sure, here is how.", "safety", True, "s")],
+        "general": [row("Nail a talk", lecture, "general", False, "s"),
+                    row("other prompt", plain, "general", False, "s"),
+                    row("nail a TALK", plain, "general", False, "s")],
+        "coding": [],
+        "math": [],
+    }
+    pools, report = clean_pools(candidates, refs={})
+    general = {prompt_of(r).lower(): response_of(r) for r in pools["general"]}
+    assert len(pools["general"]) == 2 and general["nail a talk"] == plain
+    assert report["general"]["plain_copy_preferred"] == 1
+    # the refusal pool keeps its first copy: refusing is the correct response there
+    assert response_of(pools["refusal"][0]) == "I'm sorry, I can't help."
+    assert report["refusal"]["plain_copy_preferred"] == 0
