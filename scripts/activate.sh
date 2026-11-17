@@ -6,7 +6,8 @@
 # Inside a SLURM job the stack is picked from the partition automatically.
 
 _repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[[ -n "${1:-}" ]] && export LLM_FOUNDRY_STACK="$1"
+# Only intel|amd count: a sourced script also sees its caller's arguments.
+case "${1:-}" in intel|amd) export LLM_FOUNDRY_STACK="$1" ;; esac
 
 source "$_repo/scripts/slurm/modules.sh" || return 1
 

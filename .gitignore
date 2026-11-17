@@ -12,3 +12,4 @@ __pycache__/
 .venv*/
 logs/
 *.egg-info/
+results/generations/

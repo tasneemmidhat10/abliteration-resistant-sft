@@ -28,16 +28,19 @@
       "candidates": 34999,
       "duplicates": 8,
       "contaminated": {
-        "humaneval": 3
+        "humaneval": 3,
+        "alpaca": 5
       },
-      "clean": 34988,
+      "clean": 34983,
       "selected": 4000
     },
     "math": {
       "candidates": 149960,
       "duplicates": 0,
-      "contaminated": {},
-      "clean": 149960,
+      "contaminated": {
+        "alpaca": 2
+      },
+      "clean": 149958,
       "selected": 4000
     },
     "length_only_acc_refusal_vs_general": {
@@ -78,16 +81,16 @@
   "lengths_words": {
     "coding": {
       "prompt": {
-        "mean": 150.2,
-        "median": 147.0,
-        "p10": 102.0,
-        "p90": 201.0
+        "mean": 150.0,
+        "median": 148.0,
+        "p10": 103.0,
+        "p90": 200.0
       },
       "response": {
-        "mean": 70.5,
-        "median": 33.0,
+        "mean": 69.4,
+        "median": 32.0,
         "p10": 16.0,
-        "p90": 209.0
+        "p90": 211.9
       }
     },
     "general": {
@@ -106,16 +109,16 @@
     },
     "math": {
       "prompt": {
-        "mean": 207.5,
-        "median": 203.0,
-        "p10": 151.0,
-        "p90": 268.0
+        "mean": 208.0,
+        "median": 205.0,
+        "p10": 152.0,
+        "p90": 266.0
       },
       "response": {
-        "mean": 495.4,
-        "median": 478.0,
-        "p10": 344.0,
-        "p90": 656.0
+        "mean": 495.9,
+        "median": 480.0,
+        "p10": 342.0,
+        "p90": 661.0
       }
     },
     "refusal": {
