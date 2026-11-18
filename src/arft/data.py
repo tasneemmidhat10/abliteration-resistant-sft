@@ -9,26 +9,26 @@ Outputs (in data/):
     samples.jsonl            20 train examples per stratum, for reading by eye
     eval_indices.json        frozen random subsets for the evaluation step
 
-Differences from the handbook's starter code, and why:
+Differences from the handbook's starter code, and why (sources: docs/DATA.md,
+"Provenance and references"):
   * Tülu sources are matched by exact name. The substring "personahub_math"
     also matches the Algebra subset (paper-only), which would be mixed in silently.
-  * Exact-duplicate prompts are dropped (after whitespace/case normalisation),
-    both within and across sources. For duplicated general prompts, a copy whose
-    response is not a refusal-style lecture is preferred over the first copy.
+  * Rows whose whole prompt is a refusal sentence ("I'm sorry, I can't assist with
+    that.") are dropped: Tülu Persona code contains a few, answered by stub code.
+  * Only whole-row duplicates are dropped (same prompt and same response, after
+    whitespace/case normalisation). WildGuardMix often has several responses per
+    prompt; those rows are all kept.
   * Training prompts that share any 13-word n-gram with an evaluation or attacker
     prompt (GSM8K test, HumanEval, WildGuardMix-test, AdvBench, Alpaca) are dropped.
-  * Refusal and general prompts are length-matched (same count per word-length
-    bin), because in WildGuardMix harmful prompts are ~2x longer than harmless
-    ones and the policy head could otherwise learn length instead of harm.
-    This caps both strata at ~1.4k instead of 2k. Disable with --no-length-match.
-    The Persona (coding/math) vs WildGuardMix style gap cannot be matched.
-  * The val split is stratified by stratum (refusal / general / coding / math).
+  * The split is stratified (10% of each stratum goes to val) and grouped: rows
+    with the same prompt always land in the same split, so val prompts are unseen.
+  * Prompt length is not controlled. stats.json reports how well length alone
+    separates refusal from general prompts (length_only_acc_refusal_vs_general).
   * eval_indices.json fixes a seeded random subset of GSM8K and WildGuardMix-test,
     because lm-eval's `limit=N` takes the first N items, not a random sample.
 """
 
 import argparse
-import bisect
 import json
 import random
 import re
@@ -50,29 +50,16 @@ N_SAMPLES_PER_STRATUM = 20
 # Order matters: pools are cleaned in this order and earlier ones win
 # cross-pool duplicates.
 N_TARGET = {"refusal": 2000, "general": 2000, "coding": 4000, "math": 4000}
-LENGTH_MATCHED = ("refusal", "general")
 
-# WildGuardMix has several responses per prompt, and some "compliance" responses to
-# harmless prompts open with a refusal or safety lecture. When a general prompt is
-# duplicated, keep a copy whose response does not open like that, if one exists.
-# Heuristic on the opening words; not applied to "refusal", where refusing is correct.
-PREFER_PLAIN_RESPONSE = ("general",)
-LECTURE_OPENING = re.compile(
-    r"^\W*(i'?m sorry|i am sorry|i apologi[sz]e|i cannot|i can'?t|i can not"
-    r"|i must (emphasi[sz]e|stress|clarify|point out|note)|as an ai|i'?m unable|i am unable"
-    r"|i won'?t|i'?m here to help, but|i'?m not able|it'?s important to note that"
-    r"|i understand (that|your)|while i (can'?t|cannot))",
-    re.I,
-)
+# A prompt that is nothing but a refusal sentence is a data-generation error, not a
+# task. Matched against the whole prompt, so ordinary prompts are never caught.
+JUNK_PROMPT = re.compile(r"i'?m sorry, i can(?:'?t|not) assist with that(?: request)?\.?", re.I)
 
 # Exact Tülu `source` names, checked on 2026-11-16 with Counter(tulu["source"]).
 TULU_SOURCES = {
     "coding": "ai2-adapt-dev/personahub_code_v2_34999",
     "math": "ai2-adapt-dev/personahub_math_v5_regen_149960",
 }
-
-# Lower edges of the prompt word-count bins used for length matching.
-LENGTH_BINS = [0, 6, 8, 10, 11, 12, 13, 14, 15, 16, 18, 20, 25, 30]
 
 # Frozen evaluation subsets (handbook §7, POC column).
 EVAL_N = {"gsm8k": 250, "wildguardtest_harmful": 200}
@@ -112,12 +99,12 @@ def prompt_len(r):
 
 
 def normalise(text):
-    """Lowercase and collapse whitespace: the key for exact-duplicate checks."""
+    """Lowercase and collapse whitespace: the key for duplicate checks."""
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
-def opens_with_lecture(text):
-    return bool(LECTURE_OPENING.match(text.strip()))
+def is_junk_prompt(text):
+    return JUNK_PROMPT.fullmatch(text.strip()) is not None
 
 
 def ngrams(text, n=NGRAM):
@@ -172,7 +159,7 @@ def reference_prompts():
     }
 
 
-# ---------------------------------------------------------------- decontamination
+# ---------------------------------------------------------------- cleaning
 def contamination_checker(refs):
     """Return a function prompt -> name of the leaked reference set, or None.
 
@@ -195,11 +182,7 @@ def contamination_checker(refs):
 
 
 def clean_pools(candidates, refs):
-    """Drop duplicate and contaminated rows, then shuffle each pool.
-
-    A duplicate normally loses to the first copy. In PREFER_PLAIN_RESPONSE pools,
-    a plain response replaces a kept lecture-style one, in the kept copy's slot,
-    so pool sizes and the shuffle are unaffected.
+    """Drop junk prompts, whole-row duplicates and contaminated rows; shuffle each pool.
 
     Each pool gets its own RNG, so its order depends only on its own contents:
     changing one pool never reshuffles another.
@@ -209,56 +192,25 @@ def clean_pools(candidates, refs):
     pools, report = {}, {}
     for key in N_TARGET:
         rows = candidates[key]
-        stage = {"candidates": len(rows), "duplicates": 0, "plain_copy_preferred": 0,
+        stage = {"candidates": len(rows), "junk_prompts": 0, "whole_row_duplicates": 0,
                  "contaminated": Counter()}
-        kept, slot = [], {}  # slot: normalised prompt -> index in kept (this pool only)
+        kept = []
         for r in rows:
-            norm = normalise(prompt_of(r))
-            if norm in seen:
-                stage["duplicates"] += 1
-                i = slot.get(norm)
-                if (key in PREFER_PLAIN_RESPONSE and i is not None
-                        and opens_with_lecture(response_of(kept[i]))
-                        and not opens_with_lecture(response_of(r))):
-                    kept[i] = r
-                    stage["plain_copy_preferred"] += 1
+            whole_row = (normalise(prompt_of(r)), normalise(response_of(r)))
+            if is_junk_prompt(prompt_of(r)):
+                stage["junk_prompts"] += 1
+            elif whole_row in seen:
+                stage["whole_row_duplicates"] += 1
             elif source := leaked_from(prompt_of(r)):
                 stage["contaminated"][source] += 1
             else:
-                slot[norm] = len(kept)
                 kept.append(r)
-            seen.add(norm)
+            seen.add(whole_row)
         random.Random(SEED).shuffle(kept)
         stage["contaminated"] = dict(stage["contaminated"])
         stage["clean"] = len(kept)
         pools[key], report[key] = kept, stage
     return pools, report
-
-
-# ---------------------------------------------------------------- length matching
-def length_bin(r):
-    return bisect.bisect_right(LENGTH_BINS, prompt_len(r)) - 1
-
-
-def length_match(a, b):
-    """Keep the same number of rows from a and b in every length bin.
-
-    Both inputs are already shuffled, so taking the first k per bin is a
-    random draw. Output order follows the input order.
-    """
-    bins_a, bins_b = Counter(map(length_bin, a)), Counter(map(length_bin, b))
-    quota = bins_a & bins_b  # per-bin minimum; bins missing from either get 0
-
-    def take(rows):
-        used, out = Counter(), []
-        for r in rows:
-            k = length_bin(r)
-            if used[k] < quota[k]:
-                used[k] += 1
-                out.append(r)
-        return out
-
-    return take(a), take(b)
 
 
 def length_only_accuracy(pos, neg):
@@ -278,43 +230,50 @@ def length_only_accuracy(pos, neg):
 
 
 # ---------------------------------------------------------------- selection and split
-def build_pools(candidates, refs, match_lengths=True):
-    """Clean every pool, optionally length-match refusal/general, cut to N_TARGET."""
+def build_pools(candidates, refs):
+    """Clean every pool and cut it to N_TARGET (a random draw: pools are shuffled)."""
     pools, report = clean_pools(candidates, refs)
-    length_acc = {"before_matching": length_only_accuracy(*(pools[k] for k in LENGTH_MATCHED))}
-    report["length_only_acc_refusal_vs_general"] = length_acc
-
-    if match_lengths:
-        matched = length_match(*(pools[k] for k in LENGTH_MATCHED))
-        for key, rows in zip(LENGTH_MATCHED, matched):
-            pools[key] = rows
-            report[key]["length_matched"] = len(rows)
-
+    length_acc = {"clean_pool": length_only_accuracy(pools["refusal"], pools["general"])}
     for key, target in N_TARGET.items():
-        n = target
-        if match_lengths and key in LENGTH_MATCHED:
-            n = min(target, len(pools[key]))  # matching caps the count
-        elif len(pools[key]) < target:
+        if len(pools[key]) < target:
             raise ValueError(f"{key}: only {len(pools[key])} clean rows, need {target}")
-        pools[key] = pools[key][:n]
-        report[key]["selected"] = n
-
-    length_acc["selected"] = length_only_accuracy(*(pools[k] for k in LENGTH_MATCHED))
+        pools[key] = pools[key][:target]
+        report[key]["selected"] = target
+    length_acc["selected"] = length_only_accuracy(pools["refusal"], pools["general"])
+    report["length_only_acc_refusal_vs_general"] = length_acc
     return pools, report
 
 
 def stratified_split(pools):
-    """Put the first VAL_FRAC of every (already shuffled) pool in val."""
+    """Put about VAL_FRAC of every (already shuffled) pool in val, by prompt group.
+
+    Rows that share a normalised prompt go to the same split, so no val prompt is
+    seen in training. Groups are taken in pool order; a group that would push val
+    past its quota goes to train, so val is at most VAL_FRAC of each stratum.
+    """
     train, val = [], []
     for key in sorted(pools):
         rows = pools[key]
-        n_val = round(len(rows) * VAL_FRAC)
-        val += rows[:n_val]
-        train += rows[n_val:]
+        groups = defaultdict(list)  # keeps order of first appearance
+        for r in rows:
+            groups[normalise(prompt_of(r))].append(r)
+        n_val, k_val = round(len(rows) * VAL_FRAC), 0
+        for group in groups.values():
+            if k_val + len(group) <= n_val:
+                val += group
+                k_val += len(group)
+            else:
+                train += group
+    assert not prompt_overlap(train, val), "a prompt is in both train and val"
     rng = random.Random(SEED)
     rng.shuffle(train)
     rng.shuffle(val)
     return {"train": train, "val": val}
+
+
+def prompt_overlap(a, b):
+    """Number of normalised prompts that occur in both a and b."""
+    return len({normalise(prompt_of(r)) for r in a} & {normalise(prompt_of(r)) for r in b})
 
 
 # ---------------------------------------------------------------- outputs
@@ -344,14 +303,14 @@ def describe(values):
     }
 
 
-def stats_for(splits, filtering, match_lengths):
+def stats_for(splits, filtering):
     by_stratum = defaultdict(list)
     for r in splits["train"] + splits["val"]:
         by_stratum[stratum(r)].append(r)
     return {
         "seed": SEED,
-        "length_matched": match_lengths,
         "filtering": filtering,
+        "split_prompt_overlap": prompt_overlap(splits["train"], splits["val"]),
         "splits": {
             name: {
                 "total": len(rows),
@@ -394,12 +353,12 @@ def write_json(path, obj, indent):
     path.write_text(json.dumps(obj, indent=indent) + "\n")
 
 
-def main(out_dir="data", match_lengths=True):
+def main(out_dir="data"):
     out = Path(out_dir)
     out.mkdir(exist_ok=True)
 
     candidates = {**wildguard_candidates(), **tulu_candidates()}
-    pools, filtering = build_pools(candidates, reference_prompts(), match_lengths)
+    pools, filtering = build_pools(candidates, reference_prompts())
     splits = stratified_split(pools)
 
     for name, rows in splits.items():
@@ -407,7 +366,7 @@ def main(out_dir="data", match_lengths=True):
     for filename, rows in samples_by_file(splits["train"]).items():
         write_jsonl(out / filename, rows)
 
-    stats = stats_for(splits, filtering, match_lengths)
+    stats = stats_for(splits, filtering)
     write_json(out / "stats.json", stats, indent=2)
     write_json(out / "eval_indices.json", eval_indices(), indent=1)
     print(json.dumps(stats, indent=2))
@@ -416,7 +375,4 @@ def main(out_dir="data", match_lengths=True):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out-dir", default="data")
-    ap.add_argument("--no-length-match", dest="match_lengths", action="store_false",
-                    help="keep 2k/2k refusal/general without matching prompt lengths")
-    args = ap.parse_args()
-    main(args.out_dir, args.match_lengths)
+    main(ap.parse_args().out_dir)

@@ -1,9 +1,9 @@
 from collections import Counter
+from itertools import count
 
 from arft.data import (
     clean_pools,
-    length_bin,
-    length_match,
+    is_junk_prompt,
     length_only_accuracy,
     ngrams,
     normalise,
@@ -13,17 +13,18 @@ from arft.data import (
     stratified_split,
 )
 
-
-def mk(n_words, task="general", refusal=False):
-    return row(" ".join(f"w{i}" for i in range(n_words)), "r", task, refusal, "s")
+_uid = count()
 
 
-def test_length_match_equalises_bins():
-    a = [mk(n) for n in [5, 9, 9, 12, 22, 22, 40]]
-    b = [mk(n) for n in [5, 9, 12, 12, 22]]
-    ma, mb = length_match(a, b)
-    assert Counter(map(length_bin, ma)) == Counter(map(length_bin, mb))
-    assert len(ma) == 4
+def mk(n_words, task="general", refusal=False, prompt=None):
+    """A row with an n-word prompt; prompts are unique unless `prompt` is given."""
+    if prompt is None:
+        prompt = " ".join([f"p{next(_uid)}"] + [f"w{i}" for i in range(1, n_words)])
+    return row(prompt, "r", task, refusal, "s")
+
+
+def pools_of(**rows):
+    return {"refusal": [], "general": [], "coding": [], "math": [], **rows}
 
 
 def test_length_only_accuracy():
@@ -37,6 +38,28 @@ def test_normalise_and_ngrams():
     assert len(ngrams(" ".join(f"t{i}" for i in range(14)))) == 2
 
 
+def test_junk_prompt():
+    for junk in ["I'm sorry, I can't assist with that.", "I'm sorry, I cannot assist with that request.",
+                 "  i'm sorry, i can't assist with that request. "]:
+        assert is_junk_prompt(junk)
+    for ok in ["As an aircraft mechanic, compute the fuel load for a 3-hour flight.",
+               "I'm sorry, I can't assist with that. Write a function that reverses a list.",
+               "Write a python function to sum a list of integers."]:
+        assert not is_junk_prompt(ok)
+
+
+def test_dedup_drops_only_whole_rows():
+    candidates = pools_of(general=[
+        row("Nail a talk", "Answer A", "general", False, "s"),
+        row("nail a  TALK", "Answer B", "general", False, "s"),   # same prompt, other response: kept
+        row("Nail a talk", "answer  a", "general", False, "s"),   # whole-row duplicate: dropped
+    ], coding=[row("I'm sorry, I can't assist with that.", "def soln(): ...", "coding", False, "s")])
+    pools, report = clean_pools(candidates, refs={})
+    assert sorted(response_of(r) for r in pools["general"]) == ["Answer A", "Answer B"]
+    assert report["general"]["whole_row_duplicates"] == 1
+    assert pools["coding"] == [] and report["coding"]["junk_prompts"] == 1
+
+
 def test_split_is_stratified():
     pools = {
         "refusal": [mk(10, "safety", True) for _ in range(50)],
@@ -48,22 +71,12 @@ def test_split_is_stratified():
     assert len(splits["train"]) == 135
 
 
-def test_dedup_prefers_plain_general_response():
-    lecture = "I must emphasize that harm is wrong. Here is how..."
-    plain = "Here is how to give a great presentation."
-    candidates = {
-        "refusal": [row("Hurt someone", "I'm sorry, I can't help.", "safety", True, "s"),
-                    row("hurt  someone", "Sure, here is how.", "safety", True, "s")],
-        "general": [row("Nail a talk", lecture, "general", False, "s"),
-                    row("other prompt", plain, "general", False, "s"),
-                    row("nail a TALK", plain, "general", False, "s")],
-        "coding": [],
-        "math": [],
-    }
-    pools, report = clean_pools(candidates, refs={})
-    general = {prompt_of(r).lower(): response_of(r) for r in pools["general"]}
-    assert len(pools["general"]) == 2 and general["nail a talk"] == plain
-    assert report["general"]["plain_copy_preferred"] == 1
-    # the refusal pool keeps its first copy: refusing is the correct response there
-    assert response_of(pools["refusal"][0]) == "I'm sorry, I can't help."
-    assert report["refusal"]["plain_copy_preferred"] == 0
+def test_split_keeps_prompt_groups_together():
+    # 20 general rows: 3 copies each of two prompts, the rest unique; quota is 2 val rows
+    general = [mk(5, prompt="dup a") for _ in range(3)] + [mk(5) for _ in range(14)]
+    general += [mk(5, prompt="dup b") for _ in range(3)]
+    splits = stratified_split({"general": general})
+    train_prompts = {normalise(prompt_of(r)) for r in splits["train"]}
+    val_prompts = {normalise(prompt_of(r)) for r in splits["val"]}
+    assert not train_prompts & val_prompts
+    assert len(splits["val"]) == 2 and len(splits["train"]) == 18
