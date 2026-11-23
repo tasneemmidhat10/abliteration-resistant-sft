@@ -15,6 +15,8 @@ trl==1.13.0            # (foundry) SFT trainer
 peft                   # LoRA adapters
 lm-eval                # capability benchmarks
 evaluate               # needed by HumanEval's code_eval metric
+langdetect==1.0.9      # needed by IFEval
+immutabledict==4.3.1   # needed by IFEval
 sentencepiece
 pyyaml
 matplotlib

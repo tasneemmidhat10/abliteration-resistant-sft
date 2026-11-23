@@ -2,15 +2,44 @@ import transformers
 from datasets import load_dataset
 import os
 import json
-from collections import defaultdict
+import random
+from collections import defaultdict, Counter
 import pandas as pd
 
 
-def create_dataset():
-    ds = load_dataset('json', data_files=['/home/s85tatta/abliteration-resistant-sft/data/tulu_coding.jsonl', 
-                                          '/home/s85tatta/abliteration-resistant-sft/data/tulu_instruction-following.jsonl',
-                                          '/home/s85tatta/abliteration-resistant-sft/data/wildguard.jsonl'])
-    return ds
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/SFT/utils.py -> repo
+DATA_DIR = os.path.join(REPO_ROOT, 'data')
+SOURCE_FILES = ['tulu_coding.jsonl', 'tulu_instruction-following.jsonl', 'wildguard.jsonl']
+
+
+def create_dataset(files=None):
+    """No argument: the 3 source files as one 'train' split. A dict {'train': name, 'val': name}: those files."""
+    if files is None:
+        return load_dataset('json', data_files=[os.path.join(DATA_DIR, f) for f in SOURCE_FILES])
+    return load_dataset('json', data_files={split: os.path.join(DATA_DIR, f) for split, f in files.items()})
+
+
+def make_split(tokenizer, max_len=2048, val_fraction=0.1, seed=0):
+    """Drop rows longer than max_len tokens, split 90/10 per subset, write data/train.jsonl and data/val.jsonl."""
+    rows = list(create_dataset()['train'])
+    kept = [r for r in rows                                    # same rendering as training (think block in the prompt)
+            if len(tokenizer.apply_chat_template(r['messages'], tokenize=True,
+                                                 enable_thinking=False)['input_ids']) <= max_len]
+    rng = random.Random(seed)                                  # own generator: the split never depends on other code
+    train, val = [], []
+    for subset in sorted({r['task_type'] for r in kept}):      # stratify: split each subset separately
+        group = [r for r in kept if r['task_type'] == subset]
+        rng.shuffle(group)
+        n_val = round(len(group) * val_fraction)
+        val += group[:n_val]
+        train += group[n_val:]
+    for name, part in (('train.jsonl', train), ('val.jsonl', val)):
+        with open(os.path.join(DATA_DIR, name), 'w') as f:
+            for r in part:
+                f.write(json.dumps(r, ensure_ascii=False) + '\n')  # ensure_ascii=False keeps non-English text readable
+    counts = {name: dict(Counter(r['task_type'] for r in part)) for name, part in (('train', train), ('val', val))}
+    print(f'dropped {len(rows) - len(kept)} rows over {max_len} tokens; split: {counts}')
+    return counts
 
 def load_tokenizer(model_name_or_path: str | os.PathLike ):
     tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -81,9 +110,9 @@ def main():
     summary = summarize(records)
     print(json.dumps(summary, indent=2))
 
-    # src/SFT/utils.py -> two levels up is the repo root.
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    stats_path = os.path.join(repo_root, 'data', 'stats.json')
+    summary['split'] = make_split(tokenizer)                   # also writes data/train.jsonl and data/val.jsonl
+
+    stats_path = os.path.join(DATA_DIR, 'stats.json')
     with open(stats_path, 'w') as f:
         json.dump(summary, f, indent=2)
     print(f'Saved {stats_path}')

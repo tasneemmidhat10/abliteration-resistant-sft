@@ -2,7 +2,12 @@ import torch
 from torch.utils.data import DataLoader
 import transformers
 import math
-from .utils import create_dataset, load_tokenizer
+import time
+import os
+import sys
+import json
+from collections import defaultdict
+from .utils import create_dataset, load_tokenizer, REPO_ROOT
 from functools import partial
 
 
@@ -45,14 +50,12 @@ def collate_fn(batch, pad_token_id):
        return output
 
 def compute_loss(logits, labels): #Logits are of shape (B, T, V) and labels (B, T)
-       predictions = logits[:, :-1, :]
-       targets = labels[:, 1:]
-
-       predictions = torch.flatten(predictions, start_dim=0, end_dim=1).float()
-       targets = torch.flatten(targets)
-
-       loss = torch.nn.functional.cross_entropy(predictions, targets, ignore_index=-100)
-       trained_tokens = (targets != -100).sum().item()
+       predictions = logits[:, :-1, :].flatten(0, 1)        # (B*(T-1), V): position t predicts token t+1
+       targets = labels[:, 1:].flatten()                    # (B*(T-1),)
+       keep = targets != -100                               # answer tokens only; prompt and padding dropped here,
+       predictions = predictions[keep].float()              # so the fp32 copy covers only the trained positions
+       loss = torch.nn.functional.cross_entropy(predictions, targets[keep])
+       trained_tokens = int(keep.sum())
 
        return loss, trained_tokens
 
@@ -238,7 +241,208 @@ def check_one_step(model, rows, pad_token_id, lr, use_bf16, label, require_decre
         raise ValueError(f'{label}: loss did not decrease ({loss_before.item():.4f} -> {loss_after.item():.4f})')
 
 
+def benchmark_step(model, rows, pad_token_id, use_bf16, label, peak_tflops, n_steps=10, warmup_steps=2):
+    """Experiment 5: time full training steps (forward, backward, clip, optimizer step) on one fixed batch.
+
+    peak_tflops is the GPU's advertised peak for this number format, used for MFU
+    (A40: fp32 37.4, TF32 74.8, bf16 149.7 dense TFLOPS).
+    Note: this trains the model on `rows`, so run it after all correctness checks.
+    """
+    print(f'\n--- Benchmark: {label} ---')
+    model.to('cuda')
+    model.train()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+
+    batch = collate_fn(rows, pad_token_id=pad_token_id)
+    for key in ('input_ids', 'labels', 'attention_mask'):
+        batch[key] = batch[key].to('cuda')
+    B, T = batch['input_ids'].shape
+    real_tokens = int(batch['attention_mask'].sum())
+    n_params = sum(p.numel() for p in model.parameters())
+    optimizer = build_optimizer(model=model, lr=2e-5, weight_decay=0.01)
+
+    def one_step():
+        loss, _ = forward_loss(model=model, batch=batch, use_bf16=use_bf16)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
+    result = None
+    try:
+        # Not timed: the first steps pick CUDA kernels and fill PyTorch's memory cache.
+        for _ in range(warmup_steps):
+            one_step()
+        # GPU work is asynchronous: wait for it to finish before reading the clock.
+        torch.cuda.synchronize()
+        start = time.perf_counter()
+        for _ in range(n_steps):
+            one_step()
+        torch.cuda.synchronize()
+        seconds = (time.perf_counter() - start) / n_steps
+
+        # About 6 FLOPs per parameter per token (2 forward + 4 backward). The GPU also
+        # computes on padding, so count all B*T positions for utilisation.
+        flops_per_step = 6 * n_params * B * T
+        mfu = flops_per_step / seconds / (peak_tflops * 1e12)
+        result = {'seconds_per_step': seconds,
+                  'tokens_per_second': real_tokens / seconds,
+                  'peak_memory_gb': torch.cuda.max_memory_allocated() / 1e9,
+                  'mfu': mfu}
+        print(f'batch {B} x {T} ({real_tokens} real tokens) | {seconds:.3f} s/step | '
+              f'{result["tokens_per_second"]:,.0f} tokens/s | peak {result["peak_memory_gb"]:.1f} GB | MFU {mfu:.1%}')
+    except torch.cuda.OutOfMemoryError:
+        print(f'Out of memory with batch {B} x {T} '
+              f'(peak before failing: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB)')
+    finally:
+        # Free gradients, optimizer states and cached blocks so the next run starts clean.
+        del optimizer
+        model.zero_grad(set_to_none=True)
+        torch.cuda.empty_cache()
+    return result
+
+
+CONFIG = {
+    'model': 'Qwen/Qwen3-0.6B-Base',
+    'max_len': 2048,          # rows longer than this were already removed by make_split
+    'micro_batch': 4,         # rows per forward/backward pass
+    'grad_accum': 4,          # micro-batches per optimizer step -> effective batch 16
+    'epochs': 3,
+    'lr': 2e-5,
+    'weight_decay': 0.01,
+    'warmup_ratio': 0.05,     # 5% of optimizer steps
+    'max_grad_norm': 1.0,
+    'use_bf16': True,         # mixed precision: fp32 weights, bf16 autocast
+    'seed': 0,
+    'log_every': 10,          # optimizer steps between log lines
+    'out_dir': os.path.join(REPO_ROOT, 'checkpoints', 'own-loop'),
+}
+
+
+def to_cuda(batch):
+    """Move the tensors of a collated batch to the GPU; row_id and subset stay Python lists."""
+    return {k: v.to('cuda') if torch.is_tensor(v) else v for k, v in batch.items()}
+
+
+def evaluate(model, rows, pad_token_id, batch_size, use_bf16):
+    """Validation loss per subset, averaged over trained tokens (not over rows)."""
+    model.eval()
+    loss_sum, token_count = defaultdict(float), defaultdict(int)
+    with torch.no_grad():
+        for i in range(0, len(rows), batch_size):
+            batch = to_cuda(collate_fn(rows[i:i + batch_size], pad_token_id))
+            with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_bf16):
+                logits = model(batch['input_ids'], attention_mask=batch['attention_mask']).logits
+            for j, subset in enumerate(batch['subset']):            # per row, so each loss goes to its subset
+                losses = per_token_losses(logits[j], batch['labels'][j])
+                loss_sum[subset] += losses.sum().item()
+                token_count[subset] += len(losses)
+    model.train()
+    result = {s: loss_sum[s] / token_count[s] for s in sorted(loss_sum)}
+    result['all'] = sum(loss_sum.values()) / sum(token_count.values())
+    return result
+
+
+def generate_samples(model, tokenizer, raw_rows, max_new_tokens=200):
+    """Greedy answers to the first validation prompt of each subset: does the model answer and stop?"""
+    model.eval()
+    im_end = tokenizer.convert_tokens_to_ids('<|im_end|>')
+    for subset in sorted({r['task_type'] for r in raw_rows}):
+        row = next(r for r in raw_rows if r['task_type'] == subset)
+        inputs = tokenizer.apply_chat_template(row['messages'][:1], add_generation_prompt=True,
+                                               enable_thinking=False, return_tensors='pt').to('cuda')
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False,
+                                 eos_token_id=im_end, pad_token_id=tokenizer.pad_token_id)
+        answer = out[0, inputs['input_ids'].shape[1]:]                # only the new tokens
+        stopped = im_end in answer.tolist()
+        print(f'\n[{subset}] stopped on <|im_end|>: {stopped}\n{tokenizer.decode(answer, skip_special_tokens=True)[:500]}')
+    model.train()
+
+
+def save_model(model, tokenizer, out_dir):
+    """Save (in fp32), set up so generation and lm-eval use the same format as training."""
+    tokenizer.chat_template = tokenizer.chat_template.replace(  # always put the empty think block in the prompt,
+        'enable_thinking is defined and enable_thinking is false', 'true')  # as in training (enable_thinking=False)
+    tokenizer.eos_token = '<|im_end|>'                           # the model was trained to end answers with this
+    im_end = tokenizer.convert_tokens_to_ids('<|im_end|>')
+    model.generation_config.eos_token_id = [im_end, tokenizer.convert_tokens_to_ids('<|endoftext|>')]
+    model.generation_config.pad_token_id = tokenizer.pad_token_id
+    model.save_pretrained(out_dir)       # fp32 as trained; converting the live model to bf16 would round the master weights
+    tokenizer.save_pretrained(out_dir)
+    print(f'saved {out_dir}')
+
+
+def train(cfg):
+    torch.manual_seed(cfg['seed'])
+    tokenizer = load_tokenizer(cfg['model'])
+    pad_token_id = tokenizer.pad_token_id
+    ds = create_dataset({'train': 'train.jsonl', 'val': 'val.jsonl'})
+    train_rows, dropped = tokenize_dataset(ds, tokenizer, cfg['max_len'], split='train')
+    val_rows, _ = tokenize_dataset(ds, tokenizer, cfg['max_len'], split='val')
+    assert not dropped, 'make_split should already have removed long rows'
+
+    loader = DataLoader(train_rows, batch_size=cfg['micro_batch'], shuffle=True,
+                        collate_fn=partial(collate_fn, pad_token_id=pad_token_id),
+                        generator=torch.Generator().manual_seed(cfg['seed']))   # same batch order every run
+    steps_per_epoch = math.ceil(len(loader) / cfg['grad_accum'])
+    total_steps = steps_per_epoch * cfg['epochs']
+    warmup_steps = round(cfg['warmup_ratio'] * total_steps)
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(cfg['model'], dtype=torch.float32).to('cuda')
+    model.train()
+    optimizer = build_optimizer(model, cfg['lr'], cfg['weight_decay'])
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, partial(lr_lambda, warmup_steps=warmup_steps, total_steps=total_steps))
+
+    os.makedirs(cfg['out_dir'], exist_ok=True)
+    log_file = open(os.path.join(cfg['out_dir'], 'log.jsonl'), 'w')
+    def log(record):                                              # one JSON line per event, also printed
+        print(record, flush=True)
+        log_file.write(json.dumps(record) + '\n')
+        log_file.flush()
+
+    log({'step': 0, 'val': evaluate(model, val_rows, pad_token_id, cfg['micro_batch'], cfg['use_bf16']),
+         'total_steps': total_steps, 'warmup_steps': warmup_steps, 'train_rows': len(train_rows)})
+    step, start = 0, time.perf_counter()
+    for epoch in range(1, cfg['epochs'] + 1):
+        micro_batches = list(loader)                              # this epoch's shuffled micro-batches
+        for i in range(0, len(micro_batches), cfg['grad_accum']):
+            group = [to_cuda(b) for b in micro_batches[i:i + cfg['grad_accum']]]
+            # Gradient accumulation: weight each micro-batch by its share of the step's trained tokens,
+            # so the step's gradient is the per-token mean over all of them (not a mean of means).
+            step_tokens = sum(int((b['labels'][:, 1:] != -100).sum()) for b in group)
+            step_loss = 0.0
+            for b in group:
+                loss, n_tokens = forward_loss(model, b, cfg['use_bf16'])
+                (loss * n_tokens / step_tokens).backward()       # gradients add up across micro-batches
+                step_loss += loss.item() * n_tokens / step_tokens
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg['max_grad_norm'])
+            lr = scheduler.get_last_lr()[0]                       # the lr this step actually uses
+            optimizer.step()
+            scheduler.step()                                      # once per optimizer step, not per micro-batch
+            optimizer.zero_grad(set_to_none=True)
+            step += 1
+            if step % cfg['log_every'] == 0 or step == total_steps:
+                log({'step': step, 'epoch': epoch, 'loss': round(step_loss, 4), 'lr': lr,
+                     'grad_norm': round(grad_norm.item(), 3), 'minutes': round((time.perf_counter() - start) / 60, 2)})
+        log({'step': step, 'epoch': epoch,
+             'val': evaluate(model, val_rows, pad_token_id, cfg['micro_batch'], cfg['use_bf16'])})
+        save_model(model, tokenizer, os.path.join(cfg['out_dir'], f'epoch-{epoch}'))
+
+    generate_samples(model, tokenizer, list(ds['val']))
+    log_file.close()
+
+
 def main():
+    if '--checks' in sys.argv:               # python -m SFT.train --checks  -> correctness checks and benchmarks
+        run_checks()
+    else:                                    # python -m SFT.train           -> full training run
+        train(CONFIG)
+
+
+def run_checks():
         ds = create_dataset()
         tokenizer = load_tokenizer('Qwen/Qwen3-0.6B-Base')
         pad_token_id = tokenizer.pad_token_id
@@ -291,6 +495,23 @@ def main():
         check_one_step(model=model_bf16, rows=encoded_rows[:4], pad_token_id=pad_token_id, lr=2e-5,
                        use_bf16=False, label='pure bf16', require_decrease=False)
         print('All checks passed')
+
+        # Experiment 5: speed and memory. Runs last because it trains `model` on these rows.
+        del model_bf16
+        torch.cuda.empty_cache()
+        bench_rows = [r for r in encoded_rows if 900 <= len(r['input_ids']) <= 1100][:8]
+        benchmark_step(model, bench_rows, pad_token_id, use_bf16=False, label='fp32', peak_tflops=37.4)
+        torch.set_float32_matmul_precision('high')       # fp32 matmuls on tensor cores (TF32)
+        benchmark_step(model, bench_rows, pad_token_id, use_bf16=False, label='fp32 + TF32', peak_tflops=74.8)
+        torch.set_float32_matmul_precision('highest')    # back to true fp32
+        benchmark_step(model, bench_rows, pad_token_id, use_bf16=True, label='bf16 autocast', peak_tflops=149.7)
+
+        # The 8 longest rows (up to 2048 tokens): may run out of memory, which is itself a result.
+        longest_rows = sorted(encoded_rows, key=lambda r: len(r['input_ids']), reverse=True)[:8]
+        benchmark_step(model, longest_rows, pad_token_id, use_bf16=True,
+                       label='bf16 autocast, 8 longest rows', peak_tflops=149.7)
+        benchmark_step(model, longest_rows, pad_token_id, use_bf16=False,
+                       label='fp32, 8 longest rows', peak_tflops=37.4)
 
 
 if __name__ == '__main__':

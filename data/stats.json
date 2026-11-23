@@ -82,5 +82,17 @@
       "2048": 0,
       "4096": 0
     }
+  },
+  "split": {
+    "train": {
+      "coding": 900,
+      "instruction-following": 894,
+      "safety": 900
+    },
+    "val": {
+      "coding": 100,
+      "instruction-following": 99,
+      "safety": 100
+    }
   }
 }
