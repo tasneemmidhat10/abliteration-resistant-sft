@@ -48,13 +48,41 @@ def compute_loss(logits, labels): #Logits are of shape (B, T, V) and labels (B, 
        predictions = logits[:, :-1, :]
        targets = labels[:, 1:]
 
-       predictions = torch.flatten(predictions, start_dim=0, end_dim=1)
+       predictions = torch.flatten(predictions, start_dim=0, end_dim=1).float()
        targets = torch.flatten(targets)
 
        loss = torch.nn.functional.cross_entropy(predictions, targets, ignore_index=-100)
        trained_tokens = (targets != -100).sum().item()
 
        return loss, trained_tokens
+
+def build_optimizer(model, lr, weight_decay):
+    optimizer_grouped_parameters = [
+            {'params': [], 'weight_decay': weight_decay},
+            {'params': [], 'weight_decay': 0.0}
+            ]
+    for _, p in model.named_parameters():
+        if p.ndim >= 2 and p.requires_grad:
+              optimizer_grouped_parameters[0]['params'].append(p)
+        if p.ndim < 2 and p.requires_grad:
+              optimizer_grouped_parameters[1]['params'].append(p)   
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
+    return optimizer
+
+def lr_lambda(step, warmup_steps, total_steps):
+    
+    if step < warmup_steps:
+        multiplier = step / warmup_steps
+    else:
+          progress = min(1.0, (step - warmup_steps) / (total_steps - warmup_steps))
+          multiplier = 0.5 * (1 + math.cos(math.pi * progress))
+    return multiplier
+
+def forward_loss(model, batch, use_bf16):
+    with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_bf16):
+        logits = model(batch['input_ids'], attention_mask=batch['attention_mask']).logits
+        loss, trained_tokens = compute_loss(logits=logits, labels=batch['labels'])
+    return loss, trained_tokens
 
 
 def per_token_losses(logits, labels):
@@ -90,29 +118,6 @@ def check_padding_invariance(model, encoded_rows, pad_token_id, tol=1e-4):
         raise ValueError(f'Padding changes the short row\'s losses: max difference {max_diff:.2e} > {tol}')
     print(f'Check 5 passed: short row ({n} tokens) padded to {padded["input_ids"].shape[1]}, '
           f'{len(loss_alone)} trained tokens, max per-token difference {max_diff:.2e}')
-
-def build_optimizer(model, lr, weight_decay):
-    optimizer_grouped_parameters = [
-            {'params': [], 'weight_decay': weight_decay},
-            {'params': [], 'weight_decay': 0.0}
-            ]
-    for _, p in model.named_parameters():
-        if p.ndim >= 2 and p.requires_grad:
-              optimizer_grouped_parameters[0]['params'].append(p)
-        if p.ndim < 2 and p.requires_grad:
-              optimizer_grouped_parameters[1]['params'].append(p)   
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
-    return optimizer
-
-def lr_lambda(step, warmup_steps, total_steps):
-    
-    if step < warmup_steps:
-        multiplier = step / warmup_steps
-    else:
-          progress = min(1.0, (step - warmup_steps) / (total_steps - warmup_steps))
-          multiplier = 0.5 * (1 + math.cos(math.pi * progress))
-    return multiplier
-
 
 def check_param_groups(model, optimizer):
     """Check 1: every parameter is in exactly one group, and every norm is in the no-decay group."""
@@ -172,38 +177,65 @@ def check_schedule(warmup_steps, total_steps, peak_lr, tol=1e-12):
     print(f'Check 2 passed: {total_steps} steps match transformers (max difference {max_diff:.1e}); '
           f'lr = 0 -> {ours[warmup_steps]:.1e} (step {warmup_steps}) -> {ours[middle]:.1e} (step {middle}) -> {ours[-1]:.1e}')
 
-def check_one_step(model, rows, pad_token_id, lr):
+def check_one_step(model, rows, pad_token_id, lr, use_bf16, label, require_decrease=True):
+    """Check 3 and the Part 5 experiments: one optimizer step on a fixed batch, on the GPU.
+
+    - fp32 model + use_bf16=True  -> mixed precision (fp32 master weights, bf16 autocast)
+    - fp32 model + use_bf16=False -> plain fp32
+    - bf16 model + use_bf16=False -> pure bf16 (weights, gradients and Adam states all bf16)
+    """
+    print(f'\n--- One step: {label} ---')
+    torch.cuda.reset_peak_memory_stats()
+    memory_at_start = torch.cuda.memory_allocated()
+
     model.to('cuda')
     optimizer = build_optimizer(model=model, lr=lr, weight_decay=0.01)
-    encoded_rows = collate_fn(rows, pad_token_id=pad_token_id)
-    encoded_rows['input_ids'] = encoded_rows['input_ids'].to('cuda')
-    encoded_rows['labels'] = encoded_rows['labels'].to('cuda')
-    encoded_rows['attention_mask'] = encoded_rows['attention_mask'].to('cuda')
+    batch = collate_fn(rows, pad_token_id=pad_token_id)
+    for key in ('input_ids', 'labels', 'attention_mask'):
+        batch[key] = batch[key].to('cuda')
+    weight = model.model.layers[0].self_attn.q_proj.weight
 
     with torch.no_grad():
-        logits = model(encoded_rows['input_ids'], attention_mask = encoded_rows['attention_mask']).logits
-        loss_before, _ = compute_loss(logits=logits, labels=encoded_rows['labels'])
-        copy = model.model.layers[0].self_attn.q_proj.weight.detach().clone()
+        # Measured without autocast: fp32 for the fp32 model, bf16 for the bf16 model.
+        loss_before, _ = forward_loss(model=model, batch=batch, use_bf16=False)
+        if model.dtype == torch.float32:
+            # Experiment 2: same batch, same fp32 weights, forward pass in bf16.
+            loss_autocast, _ = forward_loss(model=model, batch=batch, use_bf16=True)
+            print(f'Loss fp32 vs bf16 autocast (same batch): {loss_before.item():.5f} vs '
+                  f'{loss_autocast.item():.5f}, difference {abs(loss_before.item() - loss_autocast.item()):.2e}')
+        before = weight.detach().clone()
 
     model.train()
-    logits = model(encoded_rows['input_ids'], attention_mask = encoded_rows['attention_mask']).logits
-    loss, _ = compute_loss(logits=logits, labels=encoded_rows['labels'])
+    loss, _ = forward_loss(model=model, batch=batch, use_bf16=use_bf16)
     loss.backward()
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
-    print(f'The weight diff is {( model.model.layers[0].self_attn.q_proj.weight.detach() - copy).abs().max()}')
     optimizer.zero_grad(set_to_none=True)
+    model.eval()
+
+    after = weight.detach()
+    # Compare in fp32 so the measurement itself adds no rounding.
+    max_change = (after.float() - before.float()).abs().max().item()
+    fraction_changed = (after != before).float().mean().item()
 
     with torch.no_grad():
-        logits = model(encoded_rows['input_ids'], attention_mask = encoded_rows['attention_mask']).logits
-        loss_after, _ = compute_loss(logits=logits, labels=encoded_rows['labels'])
+        loss_after, _ = forward_loss(model=model, batch=batch, use_bf16=False)
 
-    print(f'The loss after one training step is {loss_after} and before is {loss_before}')
-    print(f'The gradients norm is {grad_norm}')
-    if loss_after >= loss_before or not  torch.isfinite(grad_norm):
-         raise ValueError('The loss after is bigger than the loss before or the gradients norms are not finite')
-    print(f'Peak used memory is {torch.cuda.max_memory_allocated() / 1e9} GB')
+    print(f'weight dtype {weight.dtype}, autocast {use_bf16}')
+    print(f'fraction of q_proj entries changed: {fraction_changed:.4f}')
+    if weight.dtype == torch.bfloat16:
+        # A bf16 value can only move if lr is more than half the gap to its neighbour: |w| < 2**-7.
+        predicted = (before.abs() < 2**-7).float().mean().item()
+        print(f'predicted fraction (|w| < 2^-7):     {predicted:.4f}')
+    print(f'largest change: {max_change:.4e} (lr = {lr:.1e})')
+    print(f'loss before -> after: {loss_before.item():.4f} -> {loss_after.item():.4f}')
+    print(f'gradient norm: {grad_norm.item():.3f}')
+    print(f'peak memory for this run: {(torch.cuda.max_memory_allocated() - memory_at_start) / 1e9:.2f} GB')
 
+    if not torch.isfinite(grad_norm):
+        raise ValueError(f'{label}: gradient norm is not finite ({grad_norm.item()})')
+    if require_decrease and loss_after >= loss_before:
+        raise ValueError(f'{label}: loss did not decrease ({loss_before.item():.4f} -> {loss_after.item():.4f})')
 
 
 def main():
@@ -217,7 +249,7 @@ def main():
         custom_collate_fn = partial(collate_fn, pad_token_id=pad_token_id)
         loader = DataLoader(encoded_rows, batch_size=8, shuffle=True,
                              collate_fn=custom_collate_fn, generator=g)
-        print(f'The number of batches is {len(loader)}', '\n')
+        print(f'The number of batches is {len(loader)}')
 
         real_tokens_count = 0
         pad_tokens_count = 0
@@ -235,7 +267,7 @@ def main():
             outputs = model(input_ids = batch['input_ids'][:2, :], attention_mask= batch['attention_mask'][:2, :])
             outputs2 = model(input_ids = batch['input_ids'][:2, :], attention_mask= batch['attention_mask'][:2, :], labels=batch['labels'][:2, :])
 
-        loss, trained_tokens = compute_loss(logits= outputs.logits.float(), labels=batch['labels'][:2, :])
+        loss, trained_tokens = compute_loss(logits= outputs.logits, labels=batch['labels'][:2, :])
 
         if abs(loss.item() - outputs2.loss) > 1e-5:
                raise ValueError('The difference is larger than 1e-5')
@@ -249,7 +281,15 @@ def main():
             optimizer, lr_lambda=partial(lr_lambda, warmup_steps=warmup_steps, total_steps=total_steps))
         check_param_groups(model, optimizer)
         check_schedule(warmup_steps, total_steps, peak_lr)
-        check_one_step(model=model, rows=encoded_rows[:4], pad_token_id=pad_token_id, lr=2e-5)
+        check_one_step(model=model, rows=encoded_rows[:4], pad_token_id=pad_token_id, lr=2e-5,
+                       use_bf16=True, label='mixed precision (fp32 weights, bf16 autocast)')
+
+        # Experiment 4: a second copy of the model stored entirely in bf16. The loss may or
+        # may not go down, so this run only reports and never fails on the loss.
+        model_bf16 = transformers.AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B-Base", dtype=torch.bfloat16)
+        model_bf16.eval()
+        check_one_step(model=model_bf16, rows=encoded_rows[:4], pad_token_id=pad_token_id, lr=2e-5,
+                       use_bf16=False, label='pure bf16', require_decrease=False)
         print('All checks passed')
 
 
