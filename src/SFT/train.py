@@ -369,6 +369,7 @@ def save_model(model, tokenizer, out_dir):
     im_end = tokenizer.convert_tokens_to_ids('<|im_end|>')
     model.generation_config.eos_token_id = [im_end, tokenizer.convert_tokens_to_ids('<|endoftext|>')]
     model.generation_config.pad_token_id = tokenizer.pad_token_id
+    model.generation_config.max_new_tokens = None                # base config says 2048; it would override lm-eval's limits
     model.save_pretrained(out_dir)       # fp32 as trained; converting the live model to bf16 would round the master weights
     tokenizer.save_pretrained(out_dir)
     print(f'saved {out_dir}')

@@ -1,0 +1,44 @@
+{
+  "base (no SFT)": {
+    "ifeval_prompt_strict": 0.12754158964879853,
+    "ifeval_inst_strict": 0.23621103117505995,
+    "ifeval_prompt_loose": 0.12939001848428835,
+    "humaneval_pass@1": 0.3170731707317073,
+    "ifeval_no_stop": 0.9075785582255084
+  },
+  "own loop, epoch 1": {
+    "ifeval_prompt_strict": 0.3807763401109057,
+    "ifeval_inst_strict": 0.486810551558753,
+    "ifeval_prompt_loose": 0.40850277264325324,
+    "humaneval_pass@1": 0.31097560975609756,
+    "ifeval_no_stop": 0.3142329020332717
+  },
+  "own loop, epoch 3": {
+    "ifeval_prompt_strict": 0.3752310536044362,
+    "ifeval_inst_strict": 0.486810551558753,
+    "ifeval_prompt_loose": 0.39926062846580407,
+    "humaneval_pass@1": 0.3597560975609756,
+    "ifeval_no_stop": 0.07578558225508318
+  },
+  "TRL fp32, epoch 1": {
+    "ifeval_prompt_strict": 0.3419593345656192,
+    "ifeval_inst_strict": 0.447242206235012,
+    "ifeval_prompt_loose": 0.36229205175600737,
+    "humaneval_pass@1": 0.31097560975609756,
+    "ifeval_no_stop": 0.24399260628465805
+  },
+  "TRL fp32, epoch 3": {
+    "ifeval_prompt_strict": 0.3659889094269871,
+    "ifeval_inst_strict": 0.48201438848920863,
+    "ifeval_prompt_loose": 0.38817005545286504,
+    "humaneval_pass@1": 0.35365853658536583,
+    "ifeval_no_stop": 0.06284658040665435
+  },
+  "TRL pure bf16, epoch 3": {
+    "ifeval_prompt_strict": 0.32162661737523107,
+    "ifeval_inst_strict": 0.447242206235012,
+    "ifeval_prompt_loose": 0.35304990757855825,
+    "humaneval_pass@1": 0.4024390243902439,
+    "ifeval_no_stop": 0.14417744916820702
+  }
+}

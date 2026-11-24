@@ -54,6 +54,7 @@ def main():
     # 3. Model: the unchanged base weights (fp32) saved next to the prepared tokenizer.
     model = transformers.AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float32)
     model.generation_config.eos_token_id = [prepared.convert_tokens_to_ids('<|im_end|>'), prepared.pad_token_id]
+    model.generation_config.max_new_tokens = None    # base config says 2048; it would override lm-eval's limits
     model.save_pretrained(MODEL_OUT)
     prepared.save_pretrained(MODEL_OUT)
     print(f'saved {DATA_OUT} and {MODEL_OUT}')

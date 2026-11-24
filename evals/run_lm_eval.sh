@@ -29,7 +29,7 @@ lm_eval run --model hf \
     --model_args pretrained=$MODEL,dtype=bfloat16 \
     --tasks ifeval,humaneval_instruct \
     --apply_chat_template \
-    --batch_size auto \
+    --batch_size 32 \
     --confirm_run_unsafe_code \
     --log_samples \
     --output_path results/lm-eval/$NAME
