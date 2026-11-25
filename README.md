@@ -135,6 +135,6 @@ scripts/        activate.sh, run_poc.sh, slurm/ job files (training, llm-foundry
 checkpoints/    trained models (not committed)
 results/        val_loss.json, lm-eval/ (scores and generated samples)
 tests/          pytest
-data/           only stats.json, samples.jsonl, eval_indices.json are committed
+data/           SFT source files (3 x 1,000 rows), train/val split, stats.json, dataset card (README.md)
 docs/           HANDBOOK.md, DATA.md, POC_REPORT.md
 ```
