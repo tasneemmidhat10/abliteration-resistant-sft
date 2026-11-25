@@ -1,0 +1,107 @@
+{
+  "ngram_hits": {
+    "humaneval": [
+      {
+        "id": "personahub_0byl6xon0dwtgizfyo5ye79f",
+        "subset": "coding",
+        "part": "answer",
+        "benchmark_item": "HumanEval/129",
+        "shared_ngram": "for i in range n for j in range n if grid i"
+      },
+      {
+        "id": "personahub_c41o2t7vic11pwkga6oc69ln",
+        "subset": "coding",
+        "part": "answer",
+        "benchmark_item": "HumanEval/105",
+        "shared_ngram": "1 one 2 two 3 three 4 four 5 five 6 six 7"
+      }
+    ],
+    "ifeval": []
+  },
+  "function_name_hits": [
+    {
+      "id": "personahub_wkqvpnzqom8x84bfhyflhmx9",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_xfcuorix7ob0e0k8oub2rgx2",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_73sq9jepq8j3gfubyrtjs5b6",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_sorted",
+      "benchmark_item": "HumanEval/126"
+    },
+    {
+      "id": "personahub_3xg91axy1zrq6trkvukamxjl",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_w7irs4xap0nskdxf5x4fg8tl",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_jcyxij9f5idd61fh8lqzz46r",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_5ox970xo9gyp25xl64kkcatj",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_qsxbabupk8eiksnypi3c1hhx",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_057ir44sxhylo3yrlmzvx9lk",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_1oesmio7wolwt73gsylit6c7",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_pzripyikvrmxhzhtdwz4tmfp",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    },
+    {
+      "id": "personahub_fe7udbjcsxqa0f1y7yu2rglt",
+      "subset": "coding",
+      "part": "answer",
+      "function": "is_palindrome",
+      "benchmark_item": "HumanEval/48"
+    }
+  ]
+}

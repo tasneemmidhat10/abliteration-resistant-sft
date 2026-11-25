@@ -109,7 +109,10 @@ WildGuardMix harm subcategories among the 1,000 refusals:
   refusal subset covers only plainly stated harmful requests.
 - **Harmful content.** The refusal prompts are harmful requests (violence, hate speech, sexual content and so on).
   The responses are refusals, but the prompts themselves are offensive.
-- **No decontamination.** Prompts are not checked against evaluation benchmarks.
+- **Benchmark overlap checked, not removed.** [evals/contamination.py](../evals/contamination.py) compares all prompts
+  and answers with IFEval and HumanEval (shared 13-word sequences, and HumanEval function names). IFEval: no overlap.
+  HumanEval: no copied problems; 12 coding rows solve similar common exercises (`is_palindrome`, `is_sorted`, digit
+  names), related to 3 of the 164 problems. Paraphrased overlap is not detected by this check.
 - **Synthetic responses.** All three subsets contain model-generated responses, which have not been checked by a
   person.
 

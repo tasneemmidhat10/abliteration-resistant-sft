@@ -49,6 +49,7 @@ pip install -r requirements.txt && pip install -e . --no-deps
 | 4. SFT, llm-foundry | `cd src && python -m SFT.prepare_foundry`, then `sbatch scripts/slurm/train_foundry.sh fp32` (and `bf16`) | `checkpoints/foundry-{fp32,bf16}/` |
 | 5. Validation loss | `sbatch scripts/slurm/compare_val.sh` | `results/val_loss.json` |
 | 6. Benchmarks | `sbatch evals/run_lm_eval.sh checkpoints/<model>` (one job per model), then `python evals/summarize_results.py` | `results/lm-eval/` |
+| 7. Contamination | `python evals/contamination.py` | `results/contamination.json` |
 | Checks (GPU) | `cd src && python -m SFT.train --checks` | correctness checks and benchmarks of the training loop |
 | Tests | `pytest` | |
 
@@ -119,6 +120,10 @@ Standard errors: about ±0.021 for IFEval (541 prompts) and ±0.037 for HumanEva
 5. **HumanEval hardly changes with this data.** `humaneval_instruct` puts the function signature in the answer
    prefix, so it mostly tests code completion, which the base model already does. For reference, llm-foundry's
    evaluation README reports 0.366 for the released Qwen3-0.6B.
+
+Contamination ([evals/contamination.py](evals/contamination.py), `results/contamination.json`): no 13-gram overlap with
+IFEval; no HumanEval problem is copied in the training data, and 12 coding rows solve similar common exercises
+(related to 3 of the 164 problems).
 
 Limitations: one seed per configuration; one model size (0.6B); training batch order differs between the two
 trainers. Generated samples are saved in `results/lm-eval/*/samples_*.jsonl`.
